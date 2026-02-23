@@ -52,16 +52,26 @@ def api_search_player():
         if is_fedno:
             try:
                 players = tgf._search_by_fedno(query)
-            except Exception:
-                players = []
+            except Exception as e:
+                print(f"[search] Fed.No API failed: {e}, trying Selenium...")
+                try:
+                    players = tgf._search_by_fedno_selenium(query)
+                except Exception as e2:
+                    print(f"[search] Fed.No Selenium also failed: {e2}")
+                    players = []
         else:
+            # Try API first, fall back to Selenium if API returns no results
             try:
                 players = tgf.search_player(query)
             except Exception:
-                # Selenium fallback — only works locally, not on cloud
+                players = []
+
+            if not players:
+                print(f"[search] API returned no results for '{query}', trying Selenium...")
                 try:
                     players = tgf.search_player_selenium(query)
-                except Exception:
+                except Exception as e:
+                    print(f"[search] Selenium also failed: {e}")
                     players = []
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -69,6 +79,10 @@ def api_search_player():
     # Filter active
     active = [p for p in players
               if p["hcp_index"] is not None and p["hcp_status"] == "Aktif"]
+
+    if not players:
+        return jsonify({"players": [], "total_raw": 0,
+                        "error": "TGF server did not respond. Please try again."})
 
     return jsonify({"players": active, "total_raw": len(players)})
 
@@ -538,7 +552,7 @@ async function searchAllPlayers() {
       });
       const data = await resp.json();
 
-      if (data.error) {
+      if (data.error && (!data.players || data.players.length === 0)) {
         status.textContent = data.error;
         status.className = 'status error';
         continue;
@@ -546,7 +560,7 @@ async function searchAllPlayers() {
 
       const players = data.players || [];
       if (players.length === 0) {
-        status.textContent = 'No active player found';
+        status.textContent = 'No active player found — try again if TGF server was slow';
         status.className = 'status error';
       } else if (players.length === 1) {
         pickPlayer(players[0], status);
