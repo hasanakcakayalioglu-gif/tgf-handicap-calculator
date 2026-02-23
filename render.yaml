@@ -1,11 +1,15 @@
 services:
   - type: web
     name: tgf-handicap-calculator
-    runtime: docker
+    runtime: python
     plan: free
     region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn tgf_playing_handicap_web:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    buildCommand: chmod +x render-build.sh && ./render-build.sh
+    startCommand: >-
+      export CHROME_BIN=/opt/render/project/.render/chrome/opt/google/chrome/google-chrome &&
+      export CHROMEDRIVER_PATH=/opt/render/project/.render/chromedriver/chromedriver &&
+      export PATH="${PATH}:/opt/render/project/.render/chrome/opt/google/chrome/" &&
+      gunicorn tgf_playing_handicap_web:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: "3.12"
