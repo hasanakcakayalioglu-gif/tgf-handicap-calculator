@@ -1,0 +1,4 @@
+flask==3.1.*
+requests>=2.31,<3
+beautifulsoup4>=4.12,<5
+gunicorn>=21,<23; sys_platform != "win32"
