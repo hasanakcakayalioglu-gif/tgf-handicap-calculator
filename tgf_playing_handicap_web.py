@@ -50,12 +50,19 @@ def api_search_player():
 
     try:
         if is_fedno:
-            players = tgf._search_by_fedno(query)
+            try:
+                players = tgf._search_by_fedno(query)
+            except Exception:
+                players = []
         else:
             try:
                 players = tgf.search_player(query)
             except Exception:
-                players = tgf.search_player_selenium(query)
+                # Selenium fallback — only works locally, not on cloud
+                try:
+                    players = tgf.search_player_selenium(query)
+                except Exception:
+                    players = []
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
