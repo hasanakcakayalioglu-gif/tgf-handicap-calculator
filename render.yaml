@@ -1,7 +1,7 @@
 services:
   - type: web
     name: tgf-handicap-calculator
-    runtime: python
+    runtime: docker
     plan: free
     region: frankfurt
     buildCommand: pip install -r requirements.txt
