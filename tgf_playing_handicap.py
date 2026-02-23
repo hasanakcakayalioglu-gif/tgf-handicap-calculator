@@ -48,40 +48,60 @@ BASE_URL = "https://scoring.tgf.org.tr/lists/"
 def _create_authenticated_session(page: str, extra_params: str = "") -> requests.Session:
     """Create a requests.Session with a valid ASP.NET session cookie.
 
-    Retries up to 5 times because the hash is minute-based and the server
-    can be flaky around the minute boundary.
+    Retries up to 10 times because the hash is minute-based and the server
+    can be flaky around the minute boundary.  We also try the previous and
+    next minute's hash on each attempt to handle clock-edge cases.
     """
-    for _ in range(5):
+    last_dt = None
+    for attempt in range(10):
         session = requests.Session()
         session.headers.update({
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/131.0.0.0 Safari/537.36"
             ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
             "Referer": "https://scoring.tgf.org.tr/lists/1ClubCall.html",
         })
 
+        # Try current minute, and also previous/next minute hashes
         now = datetime.now()
-        dt_str = f"{now.day}{now.month}{now.minute}"
-        msg = "admin" + dt_str
-        h = hmac.new(b"123", msg.encode(), hashlib.sha1).hexdigest()
+        candidates = []
+        for delta_sec in [0, -60, 60]:
+            t = datetime.fromtimestamp(now.timestamp() + delta_sec)
+            dt_str = f"{t.day}{t.month}{t.minute}"
+            if dt_str not in [c[0] for c in candidates]:
+                msg = "admin" + dt_str
+                h = hmac.new(b"123", msg.encode(), hashlib.sha1).hexdigest()
+                candidates.append((dt_str, h))
 
-        url = (
-            f"{BASE_URL}1Page.aspx?user=admin&dt={dt_str}"
-            f"&page={page}{extra_params}"
-            f"&pagelang=tr&callcontext=clubarea&hash={h}"
-        )
+        for dt_str, h in candidates:
+            if dt_str == last_dt:
+                continue  # skip if we just tried this exact hash
+            last_dt = dt_str
 
-        try:
-            resp = session.get(url, timeout=15, allow_redirects=False)
-            if "ASP.NET_SessionId" in session.cookies:
-                return session
-        except requests.RequestException:
-            pass
+            url = (
+                f"{BASE_URL}1Page.aspx?user=admin&dt={dt_str}"
+                f"&page={page}{extra_params}"
+                f"&pagelang=tr&callcontext=clubarea&hash={h}"
+            )
 
-        time.sleep(2)
+            try:
+                resp = session.get(url, timeout=15, allow_redirects=False)
+                if "ASP.NET_SessionId" in session.cookies:
+                    return session
+            except requests.RequestException:
+                pass
+
+        time.sleep(3)
 
     return None
 
@@ -104,6 +124,12 @@ def search_player(name: str) -> list[dict]:
             "Could not establish a session with the TGF scoring server. "
             "The server may be temporarily unavailable — please try again."
         )
+
+    # Visit the page first so ASP.NET sets up server-side session state
+    try:
+        session.get(BASE_URL + "FederatedsList_V2.aspx?ccode=All", timeout=15)
+    except requests.RequestException:
+        pass
 
     api_url = BASE_URL + "FederatedsList_V2.aspx/HandicapsLST"
     payload = {
@@ -163,23 +189,49 @@ def search_player(name: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Step 1 (fallback) – scrape the handicap list HTML table with Selenium
+# Selenium helper – create a headless Chrome driver (works locally & on cloud)
 # ---------------------------------------------------------------------------
 
-def search_player_selenium(name: str) -> list[dict]:
-    """Fallback: use Selenium to search the handicap list when the API fails."""
+def _create_chrome_driver():
+    """Create a headless Chrome/Chromium WebDriver.
+
+    Detects whether we're on a cloud server (Linux with system Chromium)
+    or on a local Windows machine and configures accordingly.
+    """
     from selenium import webdriver
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.service import Service
 
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1280,900")
 
-    driver = webdriver.Chrome(options=options)
+    # On Linux (cloud), use system-installed Chromium
+    chrome_bin = os.environ.get("CHROME_BIN")
+    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
+
+    if chrome_bin:
+        options.binary_location = chrome_bin
+    if chromedriver_path:
+        service = Service(executable_path=chromedriver_path)
+        return webdriver.Chrome(service=service, options=options)
+
+    return webdriver.Chrome(options=options)
+
+
+# ---------------------------------------------------------------------------
+# Step 1 (fallback) – scrape the handicap list HTML table with Selenium
+# ---------------------------------------------------------------------------
+
+def search_player_selenium(name: str) -> list[dict]:
+    """Fallback: use Selenium to search the handicap list when the API fails."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    driver = _create_chrome_driver()
     players = []
 
     try:
@@ -290,18 +342,11 @@ def _get_courses_requests() -> list[dict]:
 
 def _get_courses_selenium() -> list[dict]:
     """Fallback: use Selenium to load the CalcPlayHcp page."""
-    from selenium import webdriver
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
 
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--window-size=1280,900")
-
-    driver = webdriver.Chrome(options=options)
+    driver = _create_chrome_driver()
     try:
         driver.get("https://www.tgf.org.tr/tr/oyun-hcp-hesaplama")
         time.sleep(3)
@@ -436,18 +481,11 @@ def _search_by_fedno(fedno: str) -> list[dict]:
 
 def _search_by_fedno_selenium(fedno: str) -> list[dict]:
     """Fallback: search by federation number via Selenium."""
-    from selenium import webdriver
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
 
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--window-size=1280,900")
-
-    driver = webdriver.Chrome(options=options)
+    driver = _create_chrome_driver()
     players = []
     try:
         driver.get("https://www.tgf.org.tr/tr/handikap-listesi")
