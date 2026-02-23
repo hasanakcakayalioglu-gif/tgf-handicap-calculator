@@ -310,11 +310,11 @@ HTML_PAGE = r"""
   /* ── Tee badges ── */
   .tee-badge {
     display: inline-block;
-    padding: .15rem .55rem;
+    padding: .15rem .4rem;
     border-radius: 4px;
-    font-size: .82rem;
+    font-size: .75rem;
     font-weight: 600;
-    min-width: 55px;
+    min-width: 45px;
     text-align: center;
   }
   .tee-WHITE  { background: #f5f5f5; color: #333; border: 1px solid #bbb; }
@@ -326,24 +326,29 @@ HTML_PAGE = r"""
   .tee-GOLD   { background: #f9a825; color: #333; }
 
   /* ── Results table ── */
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
   .results-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: .9rem;
+    font-size: .85rem;
   }
   .results-table th {
     background: var(--dark);
     color: white;
-    padding: .6rem .75rem;
+    padding: .4rem .4rem;
     text-align: center;
     font-weight: 500;
     white-space: nowrap;
   }
   .results-table th:first-child { text-align: left; }
   .results-table td {
-    padding: .55rem .75rem;
+    padding: .4rem .4rem;
     text-align: center;
     border-bottom: 1px solid #e0e0e0;
+    white-space: nowrap;
   }
   .results-table td:first-child { text-align: left; }
   .results-table tr:hover td { background: #f1f8e9; }
@@ -352,7 +357,8 @@ HTML_PAGE = r"""
     font-size: 1.05rem;
     color: var(--dark);
   }
-  .player-hdr { font-size: .75rem; color: rgba(255,255,255,.7); font-weight: 400; }
+  .player-hdr { font-size: .7rem; color: rgba(255,255,255,.7); font-weight: 400; }
+  .player-name { font-size: .8rem; line-height: 1.2; }
 
   /* ── Disambiguation modal ── */
   .modal-overlay {
@@ -751,10 +757,20 @@ function renderResults(data) {
   let html = `<p style="margin-bottom:.8rem; font-size:.95rem;">
     <strong>${data.course}</strong></p>`;
 
-  html += '<table class="results-table"><thead><tr>';
-  html += '<th>Tee</th><th>PAR</th><th>Rating</th><th>Slope</th>';
+  html += '<div class="table-scroll"><table class="results-table"><thead><tr>';
+  html += '<th>Tee</th><th>PAR</th><th>CR</th><th>SL</th>';
   data.players.forEach(p => {
-    html += `<th>${p.name}<br><span class="player-hdr">HCP ${p.hcp_index}</span></th>`;
+    // Split name: first name on top, surname below
+    const parts = p.name.split(' ');
+    let nameHtml;
+    if (parts.length >= 2) {
+      const firstName = parts.slice(0, -1).join(' ');
+      const surname = parts[parts.length - 1];
+      nameHtml = `<span class="player-name">${firstName}<br>${surname}</span>`;
+    } else {
+      nameHtml = `<span class="player-name">${p.name}</span>`;
+    }
+    html += `<th>${nameHtml}<br><span class="player-hdr">HCP ${p.hcp_index}</span></th>`;
   });
   html += '</tr></thead><tbody>';
 
@@ -772,7 +788,7 @@ function renderResults(data) {
     html += '</tr>';
   });
 
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
 
   body.innerHTML = html;
   card.style.display = '';
