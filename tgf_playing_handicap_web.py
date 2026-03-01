@@ -22,6 +22,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from flask import Flask, request, jsonify, render_template_string
 import tgf_playing_handicap as tgf  # reuse all backend logic
+import requests
+import threading
+import time
+from datetime import date
 
 app = Flask(__name__)
 
@@ -36,47 +40,137 @@ def _get_courses_cached() -> list[dict]:
     return _course_cache
 
 
+# ── Cache TGF session & player lookups ───────────────────────────────
+
+_tgf_session_lock = threading.Lock()
+_tgf_session: requests.Session | None = None
+_tgf_session_time: float = 0
+
+_player_cache_lock = threading.Lock()
+_player_cache: dict[str, dict] = {}   # {query_lower: {"players": [...], "date": date}}
+
+
+def _get_or_create_tgf_session() -> requests.Session | None:
+    """Return a cached TGF session, creating a new one if stale (>5 min)."""
+    global _tgf_session, _tgf_session_time
+    with _tgf_session_lock:
+        now = time.time()
+        if _tgf_session and (now - _tgf_session_time) < 300:
+            return _tgf_session
+
+        session = tgf._create_authenticated_session("handicaps", "&ccode=All")
+        if session is None:
+            return None
+
+        # Visit the list page so ASP.NET sets up server-side state
+        try:
+            session.get(tgf.BASE_URL + "FederatedsList_V2.aspx?ccode=All", timeout=15)
+        except Exception:
+            pass
+
+        _tgf_session = session
+        _tgf_session_time = now
+        return session
+
+
+def _invalidate_tgf_session():
+    """Force the next call to create a fresh session."""
+    global _tgf_session, _tgf_session_time
+    with _tgf_session_lock:
+        _tgf_session = None
+        _tgf_session_time = 0
+
+
+def _search_with_session(session: requests.Session, query: str, is_fedno: bool) -> list[dict]:
+    """Search for a player using an already-authenticated session."""
+    api_url = tgf.BASE_URL + "FederatedsList_V2.aspx/HandicapsLST"
+    payload = {
+        "name": "" if is_fedno else query,
+        "fedno": query if is_fedno else "",
+        "ClubCode": "All", "FedStat": "9", "Gender": "All",
+        "Agelev": "All", "HcpStat": "All", "FHcp": "", "THcp": "",
+        "ProAm": "All", "IniFlag": "0", "FAge": "", "TAge": "",
+        "Permit": "", "MaxResults": "0", "MessMax": "",
+        "jtStartIndex": 0, "jtPageSize": 100, "jtSorting": "name ASC",
+    }
+    resp = session.post(
+        api_url, json=payload,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": tgf.BASE_URL + "FederatedsList_V2.aspx",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    records = resp.json().get("d", {}).get("Records", [])
+
+    players = []
+    for r in records:
+        hcp_raw = r.get("hcp_exact")
+        players.append({
+            "fed_no": r.get("federation_code"),
+            "name": r.get("name"),
+            "club": r.get("acronym"),
+            "club_code": r.get("club_code"),
+            "hcp_index": hcp_raw / 10.0 if hcp_raw is not None else None,
+            "hcp_status": r.get("hcp_status"),
+            "gender": r.get("gender"),
+            "age_group": r.get("age_level"),
+        })
+    return players
+
+
 # ── API endpoints ────────────────────────────────────────────────────
 
 @app.route("/api/search_player", methods=["POST"])
 def api_search_player():
-    """Search for a player by name or federation number."""
+    """Search for a player by name or federation number (with caching)."""
     data = request.get_json(force=True)
     query = (data.get("query") or "").strip()
     if not query:
         return jsonify({"error": "Empty query"}), 400
 
     is_fedno = query.isdigit()
+    cache_key = query.lower()
+    today = date.today()
 
+    # ── Check server-side player cache (same day) ──
+    with _player_cache_lock:
+        cached = _player_cache.get(cache_key)
+        if cached and cached["date"] == today:
+            players = cached["players"]
+            active = [p for p in players
+                      if p["hcp_index"] is not None and p["hcp_status"] == "Aktif"]
+            return jsonify({"players": active, "total_raw": len(players), "cached": True})
+
+    # ── Not cached – search using shared TGF session ──
+    players = []
     try:
-        if is_fedno:
-            try:
-                players = tgf._search_by_fedno(query)
-            except Exception as e:
-                print(f"[search] Fed.No API failed: {e}, trying Selenium...")
-                try:
-                    players = tgf._search_by_fedno_selenium(query)
-                except Exception as e2:
-                    print(f"[search] Fed.No Selenium also failed: {e2}")
-                    players = []
-        else:
-            # Try API first, fall back to Selenium if API returns no results
-            try:
-                players = tgf.search_player(query)
-            except Exception:
-                players = []
+        session = _get_or_create_tgf_session()
+        if session:
+            players = _search_with_session(session, query, is_fedno)
+    except Exception as e:
+        print(f"[search] Session-based search failed: {e}")
+        _invalidate_tgf_session()
 
-            if not players:
+    # ── Fallback to Selenium if session approach yielded nothing ──
+    if not players:
+        try:
+            if is_fedno:
+                players = tgf._search_by_fedno_selenium(query)
+            else:
                 print(f"[search] API returned no results for '{query}', trying Selenium...")
-                try:
-                    players = tgf.search_player_selenium(query)
-                except Exception as e:
-                    print(f"[search] Selenium also failed: {e}")
-                    players = []
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+                players = tgf.search_player_selenium(query)
+        except Exception as e2:
+            print(f"[search] Selenium fallback also failed: {e2}")
+            players = []
 
-    # Filter active
+    # ── Cache successful results ──
+    if players:
+        with _player_cache_lock:
+            _player_cache[cache_key] = {"players": list(players), "date": today}
+
     active = [p for p in players
               if p["hcp_index"] is not None and p["hcp_status"] == "Aktif"]
 
@@ -84,7 +178,7 @@ def api_search_player():
         return jsonify({"players": [], "total_raw": 0,
                         "error": "TGF server did not respond. Please try again."})
 
-    return jsonify({"players": active, "total_raw": len(players)})
+    return jsonify({"players": active, "total_raw": len(players), "cached": False})
 
 
 @app.route("/api/courses", methods=["GET"])
@@ -495,6 +589,7 @@ HTML_PAGE = r"""
 let confirmedPlayers = [];   // [{name, fed_no, club, hcp_index, gender, ...}]
 let allCourses = {};         // {baseName: [{name, tee, par_18, cr_18, slope_18, ...}]}
 let selectedCourse = null;   // base name string
+let playerCache = {};        // {query_lower: confirmedPlayer} – avoids redundant lookups
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
@@ -536,7 +631,7 @@ async function searchAllPlayers() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Searching...';
 
-  confirmedPlayers = [];
+  confirmedPlayers = [];   // rebuild from all rows (cached + fresh)
 
   for (const row of rows) {
     const input = row.querySelector('input');
@@ -547,6 +642,15 @@ async function searchAllPlayers() {
       status.className = 'status';
       continue;
     }
+
+    const cacheKey = query.toLowerCase();
+
+    // ── Use cached result if available (avoids redundant lookups) ──
+    if (playerCache[cacheKey]) {
+      pickPlayer(playerCache[cacheKey], status);
+      continue;
+    }
+
     status.innerHTML = '<span class="spinner"></span> Searching...';
     status.className = 'status searching';
 
@@ -569,17 +673,20 @@ async function searchAllPlayers() {
         status.textContent = 'No active player found — try again if TGF server was slow';
         status.className = 'status error';
       } else if (players.length === 1) {
+        playerCache[cacheKey] = players[0];
         pickPlayer(players[0], status);
       } else {
         // Try exact match first
         const queryLower = query.toLowerCase();
         const exact = players.filter(p => p.name.toLowerCase() === queryLower);
         if (exact.length === 1) {
+          playerCache[cacheKey] = exact[0];
           pickPlayer(exact[0], status);
         } else {
           // Disambiguate
           const chosen = await showDisambig(query, exact.length > 1 ? exact : players);
           if (chosen) {
+            playerCache[cacheKey] = chosen;
             pickPlayer(chosen, status);
           } else {
             status.textContent = 'No player selected';
