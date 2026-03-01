@@ -259,11 +259,17 @@ HTML_PAGE = r"""
     --radius: 8px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
   body {
     font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
     background: var(--gray);
     color: #333;
     min-height: 100vh;
+    padding-bottom: 2rem;
   }
   header {
     background: linear-gradient(135deg, var(--dark), var(--green));
@@ -284,7 +290,6 @@ HTML_PAGE = r"""
     border-radius: var(--radius);
     box-shadow: var(--shadow);
     margin-bottom: 1.2rem;
-    overflow: hidden;
   }
   .card-header {
     background: var(--green-bg);
@@ -295,6 +300,7 @@ HTML_PAGE = r"""
     display: flex;
     align-items: center;
     gap: .5rem;
+    border-radius: var(--radius) var(--radius) 0 0;
   }
   .card-header .step {
     background: var(--green);
@@ -398,7 +404,7 @@ HTML_PAGE = r"""
     border-radius: 0 0 6px 6px;
     max-height: 250px;
     overflow-y: auto;
-    z-index: 100;
+    z-index: 999;
     display: none;
     box-shadow: 0 4px 12px rgba(0,0,0,.15);
   }
@@ -524,10 +530,13 @@ HTML_PAGE = r"""
   @media (max-width: 600px) {
     header { padding: .8rem 1rem; }
     header h1 { font-size: 1.1rem; }
+    .container { padding: 0 .5rem; margin-top: 1rem; }
     .card-body { padding: .8rem; }
     .player-row { flex-wrap: wrap; }
     .player-row .status { min-width: 100%; }
     .player-row .hcp-edit { width: 55px; }
+    .course-dropdown { max-height: 200px; }
+    body { padding-bottom: 4rem; }
   }
 </style>
 </head>
