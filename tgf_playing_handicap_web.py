@@ -334,6 +334,25 @@ HTML_PAGE = r"""
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .player-row .hcp-edit {
+    width: 60px;
+    padding: .3rem .4rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: .85rem;
+    text-align: center;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .player-row .hcp-edit:focus {
+    outline: none;
+    border-color: var(--green-light);
+    box-shadow: 0 0 0 3px rgba(76,175,80,.15);
+  }
+  .player-row .hcp-edit.modified {
+    border-color: #f57c00;
+    background: #fff8e1;
+  }
   .status.found { color: var(--green); }
   .status.error { color: #c62828; }
   .status.searching { color: #f57c00; }
@@ -508,6 +527,7 @@ HTML_PAGE = r"""
     .card-body { padding: .8rem; }
     .player-row { flex-wrap: wrap; }
     .player-row .status { min-width: 100%; }
+    .player-row .hcp-edit { width: 55px; }
   }
 </style>
 </head>
@@ -593,6 +613,8 @@ let playerCache = {};        // {query_lower: confirmedPlayer} – avoids redund
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
+  addPlayerRow();
+  addPlayerRow();
   addPlayerRow();
   addPlayerRow();
   loadCourses();
@@ -707,8 +729,46 @@ async function searchAllPlayers() {
 
 function pickPlayer(p, statusEl) {
   confirmedPlayers.push(p);
-  statusEl.innerHTML = `&#10003; <b>${p.name}</b> &middot; HCP ${p.hcp_index} &middot; ${p.club}`;
+  // Show player info with an editable HCP input
+  const row = statusEl.closest('.player-row');
+  // Remove any previous hcp-edit input in this row
+  const oldEdit = row.querySelector('.hcp-edit');
+  if (oldEdit) oldEdit.remove();
+
+  statusEl.innerHTML = `&#10003; <b>${p.name}</b> &middot; ${p.club}`;
   statusEl.className = 'status found';
+
+  // Insert editable HCP field after the status span
+  const hcpInput = document.createElement('input');
+  hcpInput.type = 'text';
+  hcpInput.className = 'hcp-edit';
+  hcpInput.value = p.hcp_index;
+  hcpInput.title = 'Edit handicap index';
+  hcpInput.dataset.originalHcp = p.hcp_index;
+  hcpInput.dataset.playerName = p.name;
+  hcpInput.addEventListener('input', function() {
+    // Highlight if modified from original
+    if (parseFloat(this.value) !== parseFloat(this.dataset.originalHcp)) {
+      this.classList.add('modified');
+    } else {
+      this.classList.remove('modified');
+    }
+  });
+  hcpInput.addEventListener('change', function() {
+    const val = parseFloat(this.value);
+    if (isNaN(val)) {
+      this.value = this.dataset.originalHcp;
+      this.classList.remove('modified');
+      return;
+    }
+    // Update the confirmedPlayers entry with the overridden value
+    const cp = confirmedPlayers.find(cp => cp.name === this.dataset.playerName);
+    if (cp) cp.hcp_index = val;
+    tryCalculate();
+  });
+  // Insert before the remove button
+  const removeBtn = row.querySelector('.remove-btn');
+  row.insertBefore(hcpInput, removeBtn);
 }
 
 // ── Disambiguation modal ──
@@ -842,6 +902,16 @@ function selectCourse(baseName) {
 // ── Calculate ──
 async function tryCalculate() {
   if (confirmedPlayers.length === 0 || !selectedCourse) return;
+
+  // Read current HCP values from editable inputs (picks up any overrides)
+  const hcpEdits = document.querySelectorAll('.hcp-edit');
+  hcpEdits.forEach(input => {
+    const val = parseFloat(input.value);
+    if (!isNaN(val)) {
+      const cp = confirmedPlayers.find(cp => cp.name === input.dataset.playerName);
+      if (cp) cp.hcp_index = val;
+    }
+  });
 
   const resp = await fetch('/api/calculate', {
     method: 'POST',
