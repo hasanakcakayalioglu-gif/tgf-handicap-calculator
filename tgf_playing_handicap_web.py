@@ -259,17 +259,14 @@ HTML_PAGE = r"""
     --radius: 8px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body {
-    height: auto;
-    overflow-x: hidden;
-    -webkit-overflow-scrolling: touch;
-  }
   body {
     font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
     background: var(--gray);
     color: #333;
     min-height: 100vh;
     padding-bottom: 2rem;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
   }
   header {
     background: linear-gradient(135deg, var(--dark), var(--green));
@@ -415,8 +412,18 @@ HTML_PAGE = r"""
     font-size: .9rem;
     border-bottom: 1px solid #f0f0f0;
   }
-  .course-item:hover { background: var(--green-bg); }
+  .course-item:hover, .course-item:active { background: var(--green-bg); }
   .course-item .tees { font-size: .75rem; color: #666; margin-top: 2px; }
+
+  /* ── Course bottom-sheet overlay for mobile ── */
+  .course-sheet-backdrop {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.4);
+    z-index: 998;
+  }
+  .course-sheet-backdrop.open { display: block; }
   .course-selected {
     margin-top: .6rem;
     padding: .6rem;
@@ -530,13 +537,40 @@ HTML_PAGE = r"""
   @media (max-width: 600px) {
     header { padding: .8rem 1rem; }
     header h1 { font-size: 1.1rem; }
-    .container { padding: 0 .5rem; margin-top: 1rem; }
+    .container { padding: 0 .5rem; margin-top: .8rem; }
     .card-body { padding: .8rem; }
-    .player-row { flex-wrap: wrap; }
-    .player-row .status { min-width: 100%; }
-    .player-row .hcp-edit { width: 55px; }
-    .course-dropdown { max-height: 200px; }
     body { padding-bottom: 4rem; }
+
+    /* Player rows: compact on mobile */
+    .player-row { flex-wrap: nowrap; }
+    .player-row input[type="text"] { font-size: .85rem; padding: .45rem .5rem; }
+    .player-row .status { min-width: 0; flex: 1; font-size: .7rem; }
+    .player-row .hcp-edit { width: 48px; font-size: .8rem; padding: .25rem .3rem; }
+    .player-row .remove-btn { font-size: 1.1rem; }
+
+    /* Course dropdown → fixed bottom sheet on mobile */
+    .course-dropdown {
+      position: fixed !important;
+      top: auto !important;
+      bottom: 0;
+      left: 0; right: 0;
+      max-height: 55vh;
+      border-radius: 16px 16px 0 0;
+      border: none;
+      box-shadow: 0 -4px 24px rgba(0,0,0,.25);
+      z-index: 1000;
+      padding-top: .3rem;
+    }
+    .course-dropdown::before {
+      content: '';
+      display: block;
+      width: 40px; height: 4px;
+      background: #ccc;
+      border-radius: 2px;
+      margin: .4rem auto .2rem;
+    }
+    .course-item { padding: .7rem .9rem; font-size: .95rem; }
+    .course-item .tees { font-size: .8rem; }
   }
 </style>
 </head>
@@ -600,6 +634,9 @@ HTML_PAGE = r"""
   Formula: Playing HCP = round(HCP Index &times; Slope / 113 + (Rating &minus; PAR))
 </footer>
 
+<!-- ════ Course bottom-sheet backdrop (mobile) ════ -->
+<div class="course-sheet-backdrop" id="courseBackdrop"></div>
+
 <!-- ════ Disambiguation modal (hidden) ════ -->
 <div id="disambigModal" class="modal-overlay hidden">
   <div class="modal">
@@ -620,6 +657,14 @@ let allCourses = {};         // {baseName: [{name, tee, par_18, cr_18, slope_18,
 let selectedCourse = null;   // base name string
 let playerCache = {};        // {query_lower: confirmedPlayer} – avoids redundant lookups
 
+// ── Helpers ──
+function isMobile() { return window.innerWidth <= 600; }
+
+function closeCourseDropdown() {
+  document.getElementById('courseDropdown').classList.remove('open');
+  document.getElementById('courseBackdrop').classList.remove('open');
+}
+
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
   addPlayerRow();
@@ -627,11 +672,14 @@ document.addEventListener('DOMContentLoaded', () => {
   addPlayerRow();
   addPlayerRow();
   loadCourses();
+
+  // Close dropdown when clicking outside (desktop) or on backdrop (mobile)
   document.addEventListener('click', e => {
-    if (!e.target.closest('.course-search')) {
-      document.getElementById('courseDropdown').classList.remove('open');
+    if (!e.target.closest('.course-search') && !e.target.closest('.course-dropdown')) {
+      closeCourseDropdown();
     }
   });
+  document.getElementById('courseBackdrop').addEventListener('click', closeCourseDropdown);
 });
 
 // ── Player rows ──
@@ -835,15 +883,17 @@ async function loadCourses() {
 function filterCourses() {
   const q = document.getElementById('courseInput').value.trim().toLowerCase();
   const dd = document.getElementById('courseDropdown');
+  const backdrop = document.getElementById('courseBackdrop');
   dd.innerHTML = '';
 
-  if (q.length < 1) { dd.classList.remove('open'); return; }
+  if (q.length < 1) { closeCourseDropdown(); return; }
 
   const names = Object.keys(allCourses).filter(n => n.toLowerCase().includes(q)).sort();
 
   if (names.length === 0) {
     dd.innerHTML = '<div class="course-item" style="color:#999">No courses found</div>';
     dd.classList.add('open');
+    if (isMobile()) backdrop.classList.add('open');
     return;
   }
 
@@ -856,6 +906,7 @@ function filterCourses() {
     dd.appendChild(div);
   });
   dd.classList.add('open');
+  if (isMobile()) backdrop.classList.add('open');
 }
 
 function courseKeydown(e) {
@@ -876,7 +927,7 @@ function courseKeydown(e) {
 function selectCourse(baseName) {
   selectedCourse = baseName;
   document.getElementById('courseInput').value = baseName;
-  document.getElementById('courseDropdown').classList.remove('open');
+  closeCourseDropdown();
 
   // Show course info
   const tees = allCourses[baseName] || [];
